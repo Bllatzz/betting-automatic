@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { width: 320px; background: #080810; color: #e2e2f0; font-family: 'Segoe UI', sans-serif; }
+    .header { padding: 16px; border-bottom: 1px solid #1e1e30; display: flex; align-items: center; gap: 10px; }
+    .logo { font-size: 20px; color: #ffd600; }
+    .title { font-size: 14px; font-weight: 600; color: #fff; }
+    .sub { font-size: 10px; color: #44445a; letter-spacing: 1px; }
+    .body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    .status-bar { background: #0d0d1a; border: 1px solid #1e1e30; border-radius: 10px; padding: 14px; }
+    .status-row { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0; }
+    .dot.ok   { background: #00e676; box-shadow: 0 0 6px #00e676; }
+    .dot.err  { background: #ff1744; }
+    .dot.busy { background: #ffd600; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .status-text { font-size: 12px; color: #aaa; }
+    .status-text strong { color: #fff; }
+
+    .ultima { margin-top: 10px; font-size: 11px; color: #44445a; line-height: 1.6; }
+    .ultima span { color: #8888aa; }
+
+    .btn { width: 100%; padding: 12px; border-radius: 8px; border: none; font-size: 13px; cursor: pointer; font-weight: 600; transition: opacity .2s; }
+    .btn:hover { opacity: .85; }
+    .btn-test { background: #1e1e30; color: #e2e2f0; border: 1px solid #2e2e45; }
+
+    .msg { font-size: 11px; padding: 8px 12px; border-radius: 6px; text-align: center; }
+    .msg.ok  { background: rgba(0,230,118,.1); color: #00e676; border: 1px solid rgba(0,230,118,.2); }
+    .msg.err { background: rgba(255,23,68,.1);  color: #ff1744; border: 1px solid rgba(255,23,68,.2); }
+
+    .form { display: flex; flex-direction: column; gap: 8px; }
+    .form label { font-size: 11px; color: #44445a; text-transform: uppercase; letter-spacing: .5px; }
+    .form input, .form select {
+      width: 100%; background: #0d0d1a; border: 1px solid #1e1e30;
+      border-radius: 6px; padding: 7px 10px; color: #e2e2f0;
+      font-size: 12px; outline: none;
+    }
+    .form input:focus, .form select:focus { border-color: #ffd600; }
+    .form .row { display: flex; gap: 8px; }
+    .form .row > * { flex: 1; }
+    .divider { border: none; border-top: 1px solid #1e1e30; margin: 4px 0; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="logo">◈</span>
+    <div>
+      <div class="title">BETTING USERBOT</div>
+      <div class="sub">Automação Bet365 · Odds Asiáticas</div>
+    </div>
+  </div>
+  <div class="body">
+
+    <!-- STATUS DO SERVIDOR -->
+    <div class="status-bar">
+      <div class="status-row">
+        <div class="dot" id="dot"></div>
+        <div class="status-text" id="status-text">Verificando servidor...</div>
+      </div>
+      <div class="ultima" id="ultima" style="display:none">
+        <span>Última aposta:</span><br>
+        <span id="ultima-info"></span>
+      </div>
+    </div>
+
+    <!-- FORMULÁRIO DE TESTE MANUAL -->
+    <div class="form">
+      <label>Teste manual (DRY RUN)</label>
+
+      <input id="timeCasa"      placeholder="Time da casa  (ex: Osasuna)" />
+      <input id="timeVisitante" placeholder="Time visitante  (ex: Real Betis)" />
+
+      <hr class="divider" />
+
+      <label>Mercado</label>
+      <select id="mercadoAsiatico">
+        <option value="Gols +/-">Gols +/-</option>
+        <option value="Escanteios Asiáticos">Escanteios Asiáticos</option>
+        <option value="1º Tempo - Gols +/-">1º Tempo - Gols +/-</option>
+        <option value="1º Tempo - Escanteios Asiáticos">1º Tempo - Escanteios Asiáticos</option>
+      </select>
+
+      <div class="row">
+        <div>
+          <label>Offset</label>
+          <input id="offset" type="number" step="0.5" min="0" placeholder="ex: 0.5, 3.5, 2.0" />
+        </div>
+        <div>
+          <label>Direção</label>
+          <select id="direcao">
+            <option value="mais">Mais de (Over)</option>
+            <option value="menos">Menos de (Under)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Valor (R$)</label>
+          <input id="valor" type="number" step="0.01" value="0.50" />
+        </div>
+      </div>
+
+      <button class="btn btn-test" id="btnTeste">Testar no browser (dry run)</button>
+    </div>
+
+    <div id="msg" style="display:none" class="msg"></div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

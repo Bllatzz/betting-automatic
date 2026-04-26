@@ -1,0 +1,15 @@
+{
+  "name": "betting-userbot",
+  "version": "3.0.0",
+  "description": "Servidor bridge + extensão Chrome que executa apostas automáticas na Bet365, acionado pelo robotip",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test-extensao.js",
+    "test:dry": "DRY_RUN=true node test-extensao.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0",
+    "node-fetch": "^2.7.0"
+  }
+}
