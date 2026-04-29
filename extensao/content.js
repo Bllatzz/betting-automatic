@@ -1176,18 +1176,26 @@ async function faseOddsAsiaticas(aposta) {
 
   // ── PASSO 6: Preencher stake e confirmar ──────────────────────────────────
 
-  const confirmado = await preencherEConfirmar(apostaComLinha.valorReais, apostaComLinha.dryRun);
+  const resultado = await preencherEConfirmar(apostaComLinha.valorReais, apostaComLinha.dryRun);
   limparEstado();
 
   await reportarResultado({
-    sucesso: confirmado,
+    sucesso: resultado.sucesso,
+    betRef: resultado.betRef,
     odd: oddCapturada,
     linha: apostaComLinha.linha,
     etapa: 'confirmacao',
     timestamp: new Date().toISOString(),
-    erro: confirmado ? undefined : 'Falha ao preencher ou confirmar a aposta',
+    erro: resultado.sucesso ? undefined : 'Falha ao preencher ou confirmar a aposta',
     ...apostaComLinha,
   });
+
+  // Volta pra home após sucesso (libera a UI pra próxima aposta)
+  if (resultado.sucesso && !resultado.dryRun) {
+    await sleep(1500);
+    console.log('[BOT] 🏠 Aposta confirmada, voltando pra home');
+    location.href = 'https://www.bet365.bet.br/#/HO/';
+  }
 }
 
 // ─── STAKE / CONFIRMAR ────────────────────────────────────────────────────────
@@ -1207,7 +1215,7 @@ async function preencherEConfirmar(valorReais, dryRun) {
   if (!betslip) {
     console.error('[BOT] ❌ Cardeneta/betslip não apareceu');
     debugScan();
-    return false;
+    return { sucesso: false };
   }
   console.log(`[BOT] ✅ Cardeneta aberta [${betslip.className.split(' ')[0]}]`);
 
@@ -1227,11 +1235,14 @@ async function preencherEConfirmar(valorReais, dryRun) {
       salvarEstado('odds-asiaticas', estado?.aposta, retryCount + 1);
       await sleep(1500);
       location.reload();
-    } else {
-      console.error(`[BOT] ❌ Erro Bet365 persistente após 2 tentativas: "${msgErro}"`);
-      limparEstado();
+      // location.reload() não para o JS imediatamente — sem isso o caller
+      // executa limparEstado() e apaga o retry antes da página recarregar
+      await new Promise(() => {});
+      return { sucesso: false };
     }
-    return false;
+    console.error(`[BOT] ❌ Erro Bet365 persistente após 2 tentativas: "${msgErro}"`);
+    limparEstado();
+    return { sucesso: false };
   }
 
   function buscarStakeInput() {
@@ -1264,7 +1275,7 @@ async function preencherEConfirmar(valorReais, dryRun) {
     console.log('contenteditable visíveis:', [...document.querySelectorAll('[contenteditable]')].map(
       el => `class="${el.className}" visible=${el.offsetParent !== null}`
     ));
-    return false;
+    return { sucesso: false };
   }
 
   // Formata o valor: vírgula decimal (padrão Bet365 BR), sem casas desnecessárias
@@ -1281,7 +1292,7 @@ async function preencherEConfirmar(valorReais, dryRun) {
 
   if (dryRun) {
     console.log('[BOT] 🧪 DRY RUN — parei aqui, não confirmei');
-    return true;
+    return { sucesso: true, dryRun: true };
   }
 
   await sleep(2000); // aguarda antes de confirmar
@@ -1294,19 +1305,29 @@ async function preencherEConfirmar(valorReais, dryRun) {
     .find(el => el.offsetParent !== null && !el.closest('.Hidden'));
   const confirmar = acceptBtn || placeBtnWrapper;
 
-  if (!confirmar) { console.error('[BOT] ❌ Botão de confirmar não encontrado'); return false; }
+  if (!confirmar) { console.error('[BOT] ❌ Botão de confirmar não encontrado'); return { sucesso: false }; }
 
   const labelBtn = acceptBtn ? 'aceitar mudança de odd + fazer aposta' : 'fazer aposta';
   console.log(`[BOT] 🎯 Botão: ${confirmar.className.trim().split(' ')[0]} — ${labelBtn}`);
 
   await clicarCDP(confirmar, labelBtn);
-  await sleep(2000);
 
-  const recibo = document.querySelector('[class*="receipt" i], [class*="Receipt"], [class*="BetReceipt"]');
-  if (recibo) console.log('[BOT] ✅✅ APOSTA CONFIRMADA!');
-  else        console.warn('[BOT] ⚠️ Aposta enviada — verifique o site');
+  // Aguarda o recibo aparecer (bss-ReceiptContent contém "Aposta Feita" + Ref. BK...)
+  const recibo = await waitFor([
+    '[class*="bss-ReceiptContent"]',
+    '[class*="ReceiptContent"]',
+    '[class*="BetReceipt"]',
+  ], 10000);
 
-  return true;
+  if (recibo && recibo.textContent.includes('Aposta Feita')) {
+    const refMatch = recibo.textContent.match(/Ref\.?\s*([A-Z0-9]+)/i);
+    const betRef = refMatch ? refMatch[1] : null;
+    console.log(`[BOT] ✅✅ APOSTA CONFIRMADA! ${betRef ? `Ref: ${betRef}` : ''}`);
+    return { sucesso: true, betRef };
+  }
+
+  console.warn('[BOT] ⚠️ Recibo não detectado — aposta pode não ter sido feita');
+  return { sucesso: false };
 }
 
 // ─── ABA ODDS ASIÁTICAS ───────────────────────────────────────────────────────

@@ -16,11 +16,11 @@ async function main() {
   console.log(`Bridge  : ${bridgeUrl}\n`);
 
   const payload = {
-    timeCasa:        'Cienciano',
-    timeVisitante:   'Deportivo Moquegua',
-    mercadoAsiatico: 'Escanteios Asiáticos',
-    offset:          4.5,
-    direcao:         'menos',
+    timeCasa:        'Noah',
+    timeVisitante:   'Ararat Armenia',
+    mercadoAsiatico: 'Gols +/-',
+    offset:          0.5,
+    direcao:         'mais',
     valorReais:      0.50,
     dryRun,
   };
