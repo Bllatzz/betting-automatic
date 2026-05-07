@@ -14,9 +14,12 @@ async function poll() {
     const aposta = await res.json();
     if (!aposta?.id || aposta.id === ultimo) return;
 
-    ultimo = aposta.id;
     console.log('[BG] 📨 Aposta recebida:', aposta);
-    await enviarParaAba(aposta);
+    const enviado = await enviarParaAba(aposta);
+    // Só marca como processada se o content script confirmou recebimento.
+    // Se a tab estava navegando ou ocupada, não atualiza ultimo para que a
+    // próxima poll tente novamente.
+    if (enviado) ultimo = aposta.id;
 
   } catch {
     // servidor offline ou sem resposta — silencioso
@@ -31,7 +34,7 @@ async function enviarParaAba(aposta) {
 
   if (tabs.length === 0) {
     console.warn('[BG] ⚠️ Nenhuma aba do Bet365 aberta');
-    return;
+    return false;
   }
 
   const tab = tabs[0];
@@ -49,10 +52,18 @@ async function enviarParaAba(aposta) {
   await new Promise(r => setTimeout(r, 300)); // pequena espera após injeção
 
   try {
-    await chrome.tabs.sendMessage(tab.id, { acao: 'apostar', aposta });
-    console.log('[BG] 📡 Instrução enviada para a aba');
+    const res = await chrome.tabs.sendMessage(tab.id, { acao: 'apostar', aposta });
+    if (res?.ok) {
+      console.log('[BG] 📡 Instrução enviada para a aba');
+      return true;
+    }
+    // Content script ocupado (executando outra aposta) — retenta na próxima poll
+    console.warn('[BG] ⚠️ Content script ocupado, retentando na próxima poll');
+    return false;
   } catch (e) {
-    console.error('[BG] ❌ Erro ao enviar para aba:', e.message);
+    // Tab ainda carregando ou sem content script — retenta na próxima poll
+    console.warn('[BG] ⚠️ Não foi possível enviar para aba:', e.message);
+    return false;
   }
 }
 

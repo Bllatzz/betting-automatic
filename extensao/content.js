@@ -1812,8 +1812,12 @@ let executando = false;
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.acao === 'apostar' || msg.acao === 'apostar_direto') {
+    if (executando) {
+      console.warn('[BOT] ⚠️ Já executando uma aposta, ignorando');
+      sendResponse({ ok: false, busy: true });
+      return;
+    }
     sendResponse({ ok: true });
-    if (executando) { console.warn('[BOT] ⚠️ Já executando uma aposta, ignorando'); return; }
     executando = true;
 
     const aposta = msg.aposta;
@@ -1824,9 +1828,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       location.href = 'https://www.bet365.bet.br/#/HO/';
       // executando é resetado pelo verificarEstadoPendente na nova página
     } else {
-      executarAposta(aposta)
-        .catch(console.error)
-        .finally(() => { executando = false; });
+      // Já está na home — recarrega para garantir estado limpo antes de apostar
+      console.log('[BOT] 🔄 Recarregando home para estado limpo');
+      location.reload();
+      // verificarEstadoPendente retoma do sessionStorage após o reload
+      // executando é resetado no novo contexto da página
     }
   }
   return true;
