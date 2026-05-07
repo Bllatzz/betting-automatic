@@ -49,7 +49,7 @@ module.exports = [
   // ═══ ABA ESCANTEIOS (NÃO-ASIÁTICA) — UNDER FT ═══════════════════════════════
   // Aposta na aba "Escanteios" / "Escanteios/Cartões" da Bet365 (não nas Odds Asiáticas).
   // A linha alvo é calculada como: total_atual_escanteios + offset.
-  { nome: 'Bot vencedor 4º lugar na Copa RobôTip #1: Under 2.5 escanteios', tipoFluxo: 'escanteios_tab', direcao: 'menos', offset: 2.5 },
+  { nome: 'Bot vencedor 4º lugar na Copa RobôTip #1: Under 2.5 escanteios', tipoFluxo: 'escanteios_tab', direcao: 'menos', offset: 2.5, unidades: 2 },
   { nome: 'Under 3.5 Corners FT',                                            tipoFluxo: 'escanteios_tab', direcao: 'menos', offset: 3.5 },
 
   // ═══ EMPATE (1X2) ═══════════════════════════════════════════════════════════

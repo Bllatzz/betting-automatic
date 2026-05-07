@@ -168,7 +168,7 @@ const rotas = {
       return json(res, 400, { ok: false, erro: 'Não foi possível extrair os times da mensagem' });
     }
 
-    const valorReais = parseFloat(process.env.STAKE || '10') * (parsed.unidades || 1);
+    const valorReais = parseFloat(process.env.STAKE || '10') * (cfg?.unidades ?? parsed.unidades ?? 1);
     const payloadBase = { timeCasa, timeVisitante, valorReais, tipoFluxo };
 
     // ── 5. Constrói payload específico por tipo ──────────────────────────────
