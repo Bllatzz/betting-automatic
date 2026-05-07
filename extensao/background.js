@@ -76,6 +76,60 @@ async function clicarCDP(tabId, x, y) {
   }
 }
 
+// Mapeia char pra info da tecla (key, code, vk) — necessário pro Chrome aceitar
+// como digitação real. Cobre dígitos, vírgula e ponto (suficiente pra stake).
+function infoTecla(char) {
+  const ascii = char.charCodeAt(0);
+  let code = '';
+  if (/[0-9]/.test(char))         code = `Digit${char}`;
+  else if (char === ',')          code = 'Comma';
+  else if (char === '.')          code = 'Period';
+  else if (/[a-zA-Z]/.test(char)) code = `Key${char.toUpperCase()}`;
+  return { key: char, code, windowsVirtualKeyCode: ascii, nativeVirtualKeyCode: ascii };
+}
+
+// Digitação humana via CDP — clica, limpa o campo (Ctrl+A + Backspace) e
+// digita caractere por caractere com keyDown/keyUp. Necessário pro stake do
+// Bet365: o React ignora insertText e execCommand mas aceita keyDown com text.
+async function digitarCDP(tabId, x, y, texto) {
+  try { await chrome.debugger.attach({ tabId }, '1.3'); } catch {}
+  try {
+    const send = (params) => chrome.debugger.sendCommand({ tabId }, 'Input.dispatchKeyEvent', params);
+    const mouse = (type) => chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+      type, x, y, button: 'left', clickCount: 1, modifiers: 0,
+    });
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // 1. Click pra focar
+    await mouse('mousePressed');
+    await sleep(50);
+    await mouse('mouseReleased');
+    await sleep(200);
+
+    // 2. Ctrl+A — selecionar tudo
+    const keyA = { key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65 };
+    await send({ type: 'rawKeyDown', modifiers: 2, ...keyA });
+    await send({ type: 'keyUp',      modifiers: 2, ...keyA });
+    await sleep(80);
+
+    // 3. Backspace — apaga a seleção (sobrevive a campos que ignoram replace por insertText)
+    const keyBs = { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 };
+    await send({ type: 'rawKeyDown', ...keyBs });
+    await send({ type: 'keyUp',      ...keyBs });
+    await sleep(100);
+
+    // 4. Digita char por char — keyDown com `text` dispara keypress + insere o caractere
+    for (const char of texto) {
+      const info = infoTecla(char);
+      await send({ type: 'keyDown', text: char, unmodifiedText: char, ...info });
+      await send({ type: 'keyUp', ...info });
+      await sleep(60 + Math.random() * 60); // jitter humano
+    }
+  } finally {
+    try { await chrome.debugger.detach({ tabId }); } catch {}
+  }
+}
+
 // Recebe resultado do content script e repassa ao servidor
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.acao === 'resultado') {
@@ -93,6 +147,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(() => sendResponse({ ok: true }))
       .catch(e => sendResponse({ ok: false, erro: e.message }));
     return true; // async
+  }
+
+  if (msg.acao === 'digitar_cdp') {
+    const tabId = sender.tab?.id || msg.tabId;
+    digitarCDP(tabId, msg.x, msg.y, msg.texto)
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, erro: e.message }));
+    return true; // async
+  }
+
+  if (msg.acao === 'reagendar') {
+    fetch(`${SERVER}/reagendar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(msg.payload),
+    }).catch(() => {});
+    sendResponse({ ok: true });
   }
 
   return true;

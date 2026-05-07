@@ -1,8 +1,13 @@
-// test-extensao.js — Envia uma aposta de teste direto para o servidor bridge
+// test-empate.js — Testa o fluxo de aposta no EMPATE (1X2).
 //
 // Uso:
-//   node test-extensao.js          → dry run (navega mas NÃO confirma)
-//   node test-extensao.js --true   → aposta real de R$0.50
+//   node test-empate.js              → dry run (não confirma a aposta)
+//   node test-empate.js --true       → APOSTA REAL de R$0.50
+//
+// Pré-requisitos:
+//   1. Bridge rodando (npm start)
+//   2. Extensão carregada no Chrome
+//   3. Bet365 aberta em uma aba
 
 require('dotenv').config();
 const fetch = require('node-fetch');
@@ -12,19 +17,19 @@ async function main() {
   const dryRun     = !apostaReal;
   const bridgeUrl  = process.env.BRIDGE_URL || 'http://localhost:3002';
 
-  console.log('🧪 Enviando aposta de teste para o servidor bridge...\n');
+  console.log('🧪 Teste EMPATE (1X2)\n');
   console.log(`DRY_RUN : ${dryRun ? 'SIM — extensão navega mas NÃO confirma (use --true pra apostar)' : '🚨 NÃO — APOSTA REAL de R$0.50!'}`);
   console.log(`Bridge  : ${bridgeUrl}\n`);
 
   const payload = {
-    timeCasa:        'Noah',
-    timeVisitante:   'Ararat Armenia',
-    mercadoAsiatico: 'Gols +/-',
-    offset:          0.5,
-    direcao:         'mais',
-    valorReais:      0.50,
+    timeCasa:      'Vitoria',
+    timeVisitante: 'Ceara',
+    tipoFluxo:     'empate',
+    valorReais:    0.50,
     dryRun,
   };
+
+  console.log('📦 Payload:', JSON.stringify(payload, null, 2), '\n');
 
   try {
     const res  = await fetch(`${bridgeUrl}/apostar`, {
@@ -35,15 +40,15 @@ async function main() {
     const json = await res.json();
 
     if (res.ok) {
-      console.log('✅ Enviado! A extensão vai executar em até 2s.');
-      console.log('   Abra o Chrome no bet365.bet.br e veja o F12 (filtrar por [BOT])');
+      console.log('✅ Enviado:', json);
+      console.log('   A extensão vai executar em até 2s.');
+      console.log('   Abra o F12 na aba do Bet365 e filtre por [BOT] pra ver o passo a passo.');
     } else {
       console.log(`❌ Erro ${res.status}:`, json.erro || json);
-      console.log('   Verifique se "npm run server" está rodando em outro terminal.');
     }
   } catch (err) {
     console.log('❌ Sem conexão com o servidor bridge:', err.message);
-    console.log('   Rode "npm run server" antes de testar.');
+    console.log('   Rode "npm start" antes de testar.');
   }
 }
 

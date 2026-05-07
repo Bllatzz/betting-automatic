@@ -7,10 +7,12 @@
 
 const http = require('http');
 const { parsearMensagem } = require('./parser');
+const botsConfig = require('./bots-config');
 
-const PORT       = process.env.PORT       || 3002;
-const MAX_QUEUE  = parseInt(process.env.MAX_QUEUE  || '20');
-const MAX_AGE_MS = parseInt(process.env.MAX_AGE_MS || '300000'); // 5 minutos
+const PORT          = process.env.PORT          || 3002;
+const MAX_QUEUE     = parseInt(process.env.MAX_QUEUE     || '20');
+const MAX_AGE_MS    = parseInt(process.env.MAX_AGE_MS    || '300000'); // 5 minutos
+const REAGENDAR_MS  = parseInt(process.env.REAGENDAR_MS  || '30000');  // 30s entre tentativas
 
 let apostasQueue = [];  // fila de apostas pendentes
 let ultimaAposta = null;
@@ -18,6 +20,9 @@ let ultimaAposta = null;
 // ─── CHAVE DE DEDUPLICAÇÃO ────────────────────────────────────────────────────
 
 function chaveAposta(p) {
+  const tipo = p.tipoFluxo || 'asiaticas';
+  if (tipo === 'empate')         return `${p.timeCasa}|${p.timeVisitante}|empate`.toLowerCase();
+  if (tipo === 'escanteios_tab') return `${p.timeCasa}|${p.timeVisitante}|esct_tab|${p.direcao}`.toLowerCase();
   return `${p.timeCasa}|${p.timeVisitante}|${p.mercadoAsiatico}|${p.direcao}`.toLowerCase();
 }
 
@@ -43,27 +48,31 @@ const MERCADOS_VALIDOS = [
 ];
 
 function validarPayloadAposta(body) {
-  const camposObrigatorios = ['timeCasa', 'timeVisitante', 'mercadoAsiatico', 'offset', 'direcao', 'valorReais'];
+  const tipoFluxo = body.tipoFluxo || 'asiaticas';
+
+  const camposObrigatorios = ['timeCasa', 'timeVisitante', 'valorReais'];
+  if (tipoFluxo === 'asiaticas')      camposObrigatorios.push('mercadoAsiatico', 'offset', 'direcao');
+  if (tipoFluxo === 'escanteios_tab') camposObrigatorios.push('offset', 'direcao');
+  // 'empate' só precisa dos campos comuns
+
   for (const campo of camposObrigatorios) {
     if (body[campo] === undefined || body[campo] === null || body[campo] === '') {
       return `Campo obrigatório ausente ou vazio: "${campo}"`;
     }
   }
 
-  const mercadoNorm = body.mercadoAsiatico.trim().toLowerCase();
-  const mercadoOk = MERCADOS_VALIDOS.some(m => m.toLowerCase() === mercadoNorm);
-  if (!mercadoOk) {
-    return `Mercado inválido: "${body.mercadoAsiatico}". Valores aceitos: ${MERCADOS_VALIDOS.join(', ')}`;
+  if (tipoFluxo === 'asiaticas') {
+    const mercadoNorm = body.mercadoAsiatico.trim().toLowerCase();
+    const mercadoOk = MERCADOS_VALIDOS.some(m => m.toLowerCase() === mercadoNorm);
+    if (!mercadoOk) return `Mercado inválido: "${body.mercadoAsiatico}". Valores aceitos: ${MERCADOS_VALIDOS.join(', ')}`;
   }
 
-  const offsetVal = parseFloat(body.offset);
-  if (isNaN(offsetVal) || offsetVal < 0) {
-    return `Offset inválido: "${body.offset}". Deve ser um número >= 0 (ex: 0.5, 3.5)`;
-  }
+  if (tipoFluxo === 'asiaticas' || tipoFluxo === 'escanteios_tab') {
+    const offsetVal = parseFloat(body.offset);
+    if (isNaN(offsetVal) || offsetVal < 0) return `Offset inválido: "${body.offset}". Deve ser um número >= 0`;
 
-  const direcaoNorm = body.direcao.trim().toLowerCase();
-  if (direcaoNorm !== 'mais' && direcaoNorm !== 'menos') {
-    return `Direção inválida: "${body.direcao}". Valores aceitos: "mais", "menos"`;
+    const direcaoNorm = body.direcao.trim().toLowerCase();
+    if (direcaoNorm !== 'mais' && direcaoNorm !== 'menos') return `Direção inválida: "${body.direcao}". Valores aceitos: "mais", "menos"`;
   }
 
   return null;
@@ -93,7 +102,13 @@ function enfileirarAposta(payload, res) {
   const aposta = { ...payload, id: Date.now().toString(), queuedAt: Date.now() };
   apostasQueue.push(aposta);
   const pos = apostasQueue.length;
-  console.log(`[SERVER] 📨 Enfileirada [${pos}/${apostasQueue.length}]: ${payload.timeCasa} x ${payload.timeVisitante} | ${payload.mercadoAsiatico} | offset=${payload.offset} | ${payload.direcao} | R$${payload.valorReais.toFixed(2)}`);
+  const tipo = payload.tipoFluxo || 'asiaticas';
+  const detalhes = tipo === 'empate'
+    ? 'EMPATE (1X2)'
+    : tipo === 'escanteios_tab'
+    ? `ESCANTEIOS TAB | ${payload.direcao} ${payload.offset}`
+    : `${payload.mercadoAsiatico} | ${payload.direcao} ${payload.offset}`;
+  console.log(`[SERVER] 📨 Enfileirada [${pos}/${apostasQueue.length}]: ${payload.timeCasa} x ${payload.timeVisitante} | ${detalhes} | R$${payload.valorReais.toFixed(2)}`);
   return json(res, 200, { ok: true, id: aposta.id, queuePos: pos });
 }
 
@@ -113,51 +128,85 @@ const rotas = {
 
   // Robotip envia alerta bruto para auto-aposta
   'POST /apostar-from-alert': (body, res) => {
-    const { raw_message } = body;
+    const { raw_message, bot_name } = body;
 
     if (!raw_message) {
       return json(res, 400, { ok: false, erro: 'Campo "raw_message" é obrigatório' });
     }
 
+    // ── 1. Lookup pelo bot_name (fonte primária e mais confiável) ────────────
+    let cfg = null;
+    if (bot_name) {
+      cfg = botsConfig.find(b => b.nome === bot_name);
+      if (cfg?.naoSuportado) {
+        console.warn(`[SERVER] ⛔ Bot "${bot_name}" não suportado: ${cfg.naoSuportado}`);
+        return json(res, 400, { ok: false, erro: `Bot não suportado: ${cfg.naoSuportado}` });
+      }
+      if (!cfg) {
+        console.warn(`[SERVER] ⚠️ Bot "${bot_name}" não está em bots-config.js — caindo no parser como fallback`);
+      }
+    }
+
+    // ── 2. Parse da mensagem (extrai times/offset/unidades) ──────────────────
     const parsed = parsearMensagem(raw_message, false);
     if (!parsed) {
       return json(res, 400, { ok: false, erro: 'Não foi possível parsear a mensagem' });
     }
 
-    const { mercadoAsiatico, offset, direcao, unidades, jogo } = parsed;
+    // ── 3. Resolve tipo de fluxo (config > default 'asiaticas') ──────────────
+    const tipoFluxo = cfg?.tipoFluxo || 'asiaticas';
 
-    if (!mercadoAsiatico) {
-      return json(res, 400, { ok: false, erro: 'Mercado asiático não reconhecido na mensagem' });
-    }
-
-    const mercadoNorm = mercadoAsiatico.trim().toLowerCase();
-    const mercadoOk = MERCADOS_VALIDOS.some(m => m.toLowerCase() === mercadoNorm);
-    if (!mercadoOk) {
-      return json(res, 400, { ok: false, erro: `Mercado inválido: "${mercadoAsiatico}". Valores aceitos: ${MERCADOS_VALIDOS.join(', ')}` });
-    }
-
+    // ── 4. Extrai times da mensagem (comum a todos os fluxos) ────────────────
     let timeCasa = '';
     let timeVisitante = '';
-    if (jogo) {
-      const partes = jogo.split(/\s+x\s+/i);
+    if (parsed.jogo) {
+      const partes = parsed.jogo.split(/\s+x\s+/i);
       timeCasa      = (partes[0] || '').trim();
       timeVisitante = (partes[1] || '').trim();
     }
-
     if (!timeCasa || !timeVisitante) {
       return json(res, 400, { ok: false, erro: 'Não foi possível extrair os times da mensagem' });
     }
 
-    if (offset === null || offset === undefined) {
-      return json(res, 400, { ok: false, erro: 'Offset não encontrado na mensagem' });
-    }
+    const valorReais = parseFloat(process.env.STAKE || '10') * (parsed.unidades || 1);
+    const payloadBase = { timeCasa, timeVisitante, valorReais, tipoFluxo };
 
-    if (!direcao) {
-      return json(res, 400, { ok: false, erro: 'Direção (over/under) não encontrada na mensagem' });
-    }
+    // ── 5. Constrói payload específico por tipo ──────────────────────────────
+    let payload;
 
-    const valorReais = parseFloat(process.env.STAKE || '10') * (unidades || 1);
-    const payload = { timeCasa, timeVisitante, mercadoAsiatico, offset, direcao, valorReais };
+    if (tipoFluxo === 'empate') {
+      payload = { ...payloadBase };
+      if (cfg) console.log(`[SERVER] 🎯 Bot "${bot_name}" resolvido: EMPATE`);
+
+    } else if (tipoFluxo === 'escanteios_tab') {
+      const direcao = cfg?.direcao ?? parsed.direcao;
+      const offset  = cfg?.offset  ?? parsed.offset;
+      if (!direcao)                          return json(res, 400, { ok: false, erro: 'Direção (mais/menos) não encontrada' });
+      if (offset === null || offset === undefined) return json(res, 400, { ok: false, erro: 'Offset não encontrado' });
+      payload = { ...payloadBase, direcao, offset };
+      if (cfg) console.log(`[SERVER] 🎯 Bot "${bot_name}" resolvido: ESCANTEIOS_TAB | ${direcao} ${offset}`);
+
+    } else { // asiaticas
+      const mercadoAsiatico = cfg?.mercadoAsiatico ?? parsed.mercadoAsiatico;
+      const direcao         = cfg?.direcao         ?? parsed.direcao;
+      const offset          = cfg?.offset          ?? parsed.offset;
+
+      if (!mercadoAsiatico) {
+        return json(res, 400, { ok: false, erro: bot_name
+          ? `Bot "${bot_name}" não está em bots-config.js e o mercado não pôde ser inferido da mensagem`
+          : 'Mercado asiático não reconhecido na mensagem' });
+      }
+      const mercadoNorm = mercadoAsiatico.trim().toLowerCase();
+      const mercadoOk = MERCADOS_VALIDOS.some(m => m.toLowerCase() === mercadoNorm);
+      if (!mercadoOk)                        return json(res, 400, { ok: false, erro: `Mercado inválido: "${mercadoAsiatico}". Valores aceitos: ${MERCADOS_VALIDOS.join(', ')}` });
+      if (offset === null || offset === undefined) return json(res, 400, { ok: false, erro: 'Offset não encontrado (nem na config nem na mensagem)' });
+      if (!direcao)                          return json(res, 400, { ok: false, erro: 'Direção (over/under) não encontrada' });
+
+      payload = { ...payloadBase, mercadoAsiatico, offset, direcao };
+      // Para Over: a odd da Bet365 deve ser >= odd do alerta antes de apostar
+      if (direcao === 'mais' && parsed.odd) payload.oddMinima = parsed.odd;
+      if (cfg) console.log(`[SERVER] 🎯 Bot "${bot_name}" resolvido: ASIATICAS ${mercadoAsiatico} | ${direcao} ${offset}${payload.oddMinima ? ` | odd >= ${payload.oddMinima}` : ''}`);
+    }
 
     enfileirarAposta(payload, res);
   },
@@ -166,14 +215,35 @@ const rotas = {
   'GET /pendente': (_body, res) => {
     limparExpiradas();
 
-    if (apostasQueue.length === 0) {
-      return json(res, 200, {});
+    const agora = Date.now();
+    // Pega a primeira aposta cujo disponivelEm já passou (ou que não tem)
+    const idx = apostasQueue.findIndex(a => !a.disponivelEm || a.disponivelEm <= agora);
+    if (idx === -1) return json(res, 200, {});
+
+    const aposta = apostasQueue.splice(idx, 1)[0];
+    const esperouMs = agora - aposta.queuedAt;
+    const tag = aposta.tentativas ? ` [tentativa ${aposta.tentativas + 1}]` : '';
+    console.log(`[SERVER] 📡 Enviando para extensão${tag}: ${aposta.timeCasa} x ${aposta.timeVisitante} | R$${aposta.valorReais.toFixed(2)} | esperou ${Math.round(esperouMs / 1000)}s | restam ${apostasQueue.length} na fila`);
+    json(res, 200, aposta);
+  },
+
+  // Extensão devolve aposta para fila (linha não aberta, odd ainda baixa, etc).
+  // A aposta volta com disponivelEm = now + REAGENDAR_MS para evitar polling agressivo.
+  'POST /reagendar': (body, res) => {
+    const { aposta, motivo } = body;
+    if (!aposta || !aposta.id) return json(res, 400, { ok: false, erro: 'Campo "aposta" com "id" é obrigatório' });
+
+    // Se a aposta já passou do TTL, não vale reagendar
+    if ((Date.now() - aposta.queuedAt) > MAX_AGE_MS) {
+      console.log(`[SERVER] ⏰ Aposta já expirada (${Math.round((Date.now() - aposta.queuedAt) / 1000)}s) — não reagenda: ${aposta.timeCasa} x ${aposta.timeVisitante}`);
+      return json(res, 200, { ok: true, reagendada: false, motivo: 'expirada' });
     }
 
-    const aposta = apostasQueue.shift();
-    const esperouMs = Date.now() - aposta.queuedAt;
-    console.log(`[SERVER] 📡 Enviando para extensão: ${aposta.timeCasa} x ${aposta.timeVisitante} | R$${aposta.valorReais.toFixed(2)} | esperou ${Math.round(esperouMs / 1000)}s | restam ${apostasQueue.length} na fila`);
-    json(res, 200, aposta);
+    const tentativas = (aposta.tentativas || 0) + 1;
+    const reaposta = { ...aposta, tentativas, disponivelEm: Date.now() + REAGENDAR_MS };
+    apostasQueue.push(reaposta);
+    console.log(`[SERVER] 🔁 Reagendada [tentativas=${tentativas}] em ${REAGENDAR_MS / 1000}s: ${aposta.timeCasa} x ${aposta.timeVisitante} | motivo: ${motivo || '(não informado)'}`);
+    json(res, 200, { ok: true, reagendada: true, tentativas, proxima: reaposta.disponivelEm });
   },
 
   // Extensão reporta resultado

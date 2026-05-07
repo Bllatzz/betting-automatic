@@ -14,27 +14,29 @@ function mapearMercadoAsiatico(textoMercado) {
   // Ex: "OVER 0.5 ESCANTEIOS FT" → compara apenas a parte do mercado
   const norm = textoMercado.toUpperCase().trim();
 
+  const ESCANTEIOS = '(?:ESCANTEIOS|CORNERS)';
+  const GOLS       = '(?:GOLS?|GOALS?)';
+
   // Escanteios de tempo integral
-  if (/ESCANTEIOS\s+(FT|FULL)/.test(norm) || /^ESCANTEIOS$/.test(norm.replace(/^(OVER|UNDER)\s+[\d.]+\s+/, ''))) {
+  if (new RegExp(`${ESCANTEIOS}\\s+(FT|FULL)`).test(norm) || new RegExp(`^${ESCANTEIOS}$`).test(norm.replace(/^(OVER|UNDER)\s+[\d.]+\s+/, ''))) {
     return 'Escanteios Asiáticos';
   }
   // Escanteios do 1º tempo
-  if (/ESCANTEIOS\s+(1T|HT|HALFTIME|HALF)/.test(norm)) {
+  if (new RegExp(`${ESCANTEIOS}\\s+(1T|HT|HALFTIME|HALF)`).test(norm)) {
     return '1º Tempo - Escanteios Asiáticos';
   }
   // Escanteios genérico (sem sufixo de tempo = tempo integral)
-  if (/ESCANTEIOS/.test(norm)) {
-    // Se tem 1T/HT já foi capturado acima; aqui é FT ou sem sufixo
+  if (new RegExp(ESCANTEIOS).test(norm)) {
     if (/1T|HT/.test(norm)) return '1º Tempo - Escanteios Asiáticos';
     return 'Escanteios Asiáticos';
   }
 
   // Gols do 1º tempo
-  if (/GOLS?\s+(1T|HT|HALFTIME|HALF)/.test(norm)) {
+  if (new RegExp(`${GOLS}\\s+(1T|HT|HALFTIME|HALF)`).test(norm)) {
     return '1º Tempo - Gols +/-';
   }
   // Gols de tempo integral
-  if (/GOLS?\s+(FT|FULL)/.test(norm) || /GOLS?/.test(norm)) {
+  if (new RegExp(`${GOLS}\\s+(FT|FULL)`).test(norm) || new RegExp(GOLS).test(norm)) {
     if (/1T|HT/.test(norm)) return '1º Tempo - Gols +/-';
     return 'Gols +/-';
   }

@@ -4,9 +4,16 @@
   "description": "Servidor bridge + extensão Chrome que executa apostas automáticas na Bet365, acionado pelo robotip",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "test": "node test-extensao.js",
-    "test:dry": "DRY_RUN=true node test-extensao.js"
+    "start":                   "node src/server.js",
+    "test":                    "node test-extensao.js",
+    "test:empate":             "node test-empate.js",
+    "test:over-corners":       "node test-over-corners.js",
+    "test:over-corners-merge": "node test-over-corners-merge.js",
+    "test:under-corners":      "node test-under-corners.js",
+    "test:over-gols":          "node test-over-gols.js",
+    "test:under-gols-ht":      "node test-under-gols-ht.js",
+    "test:under-corners-2-5":  "node test-under-corners-tab-2-5.js",
+    "test:under-corners-3-5":  "node test-under-corners-tab-3-5.js"
   },
   "dependencies": {
     "dotenv": "^16.4.0",

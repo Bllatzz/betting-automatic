@@ -73,6 +73,24 @@ async function clicarCDP(el, label) {
   return true;
 }
 
+// Digitação via CDP — Ctrl+A + Input.insertText.
+// O contenteditable do Bet365 ignora document.execCommand silenciosamente.
+async function digitarCDP(el, texto, label) {
+  if (!el) { console.warn(`[BOT] ⚠️ Não achei: ${label}`); return false; }
+  el.scrollIntoView({ block: 'center' });
+  await sleep(300);
+  const r = el.getBoundingClientRect();
+  const cx = Math.round(r.left + r.width / 2);
+  const cy = Math.round(r.top  + r.height / 2);
+  await new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ acao: 'digitar_cdp', x: cx, y: cy, texto }, res => {
+      if (res?.ok) resolve(); else reject(new Error(res?.erro || 'CDP digitar falhou'));
+    });
+  });
+  console.log(`[BOT] ⌨️  CDP digitou "${texto}": ${label}`);
+  return true;
+}
+
 // Clique com eventos completos de mouse — necessário para itens de navegação do Bet365
 async function clicarNavegar(el, label) {
   if (!el) { console.warn(`[BOT] ⚠️ Não achei: ${label}`); return false; }
@@ -244,7 +262,11 @@ async function faseBusca(aposta) {
     return;
   }
 
-  salvarEstado('odds-asiaticas', aposta);
+  const tipoFluxo = aposta.tipoFluxo || 'asiaticas';
+  const proximaFase = tipoFluxo === 'empate' ? 'empate'
+    : tipoFluxo === 'escanteios_tab' ? 'escanteios-tab'
+    : 'odds-asiaticas';
+  salvarEstado(proximaFase, aposta);
 
   // 4. Aguarda a URL mudar (SPA — não recarrega o script)
   const urlAntes = location.href;
@@ -262,8 +284,10 @@ async function faseBusca(aposta) {
   }
   await sleep(1000); // aguarda conteúdo do jogo renderizar
 
-  // 5. Chama diretamente — SPA não recarrega o content script
-  await faseOddsAsiaticas(aposta);
+  // 5. Dispatch baseado no tipo de fluxo
+  if (tipoFluxo === 'empate')              await faseEmpate(aposta);
+  else if (tipoFluxo === 'escanteios_tab') await faseEscanteiosTab(aposta);
+  else                                     await faseOddsAsiaticas(aposta);
 }
 
 // Clica na aba "Ao-Vivo" do header se ainda não estiver lá
@@ -943,7 +967,8 @@ function encontrarIndiceLinha(pod, linhaPedida) {
   const normalizar = s => s.trim().toLowerCase().replace(/\s+/g, '');
   const linhaNorm = normalizar(linhaPedida);
 
-  // CA 3.4 — aviso se múltiplos matches exatos
+  // Apenas match exato. Linhas duplas como "1.5,2.0" NÃO equivalem a "1.5" —
+  // a aposta é reagendada para esperar a linha exata abrir.
   const matchesExatos = labels
     .map((el, i) => ({ i, txt: normalizar(el.textContent) }))
     .filter(({ txt }) => txt === linhaNorm);
@@ -954,15 +979,6 @@ function encontrarIndiceLinha(pod, linhaPedida) {
   if (matchesExatos.length >= 1) {
     console.log(`[BOT] ✅ Linha exata encontrada: índice ${matchesExatos[0].i}`);
     return matchesExatos[0].i;
-  }
-
-  // CA 3.2 — match parcial: a linha do DOM contém aposta.linha como segmento separado por vírgula
-  for (let i = 0; i < labels.length; i++) {
-    const segmentos = labels[i].textContent.split(',').map(s => normalizar(s));
-    if (segmentos.includes(linhaNorm)) {
-      console.log(`[BOT] ⚠️ Match parcial: "${labels[i].textContent.trim()}" contém "${linhaPedida}" — índice ${i}`);
-      return i;
-    }
   }
 
   return -1;
@@ -1086,14 +1102,9 @@ async function faseOddsAsiaticas(aposta) {
   const indiceLinha = encontrarIndiceLinha(pod, apostaComLinha.linha);
 
   if (indiceLinha === -1) {
-    console.error(`[BOT] ❌ Linha "${apostaComLinha.linha}" não encontrada no mercado "${apostaComLinha.mercadoAsiatico}"`);
+    console.warn(`[BOT] ⏳ Linha exata "${apostaComLinha.linha}" não está aberta no mercado "${apostaComLinha.mercadoAsiatico}" — reagendando`);
     limparEstado();
-    await reportarResultado({
-      sucesso: false,
-      erro: `Linha '${apostaComLinha.linha}' não encontrada no mercado '${apostaComLinha.mercadoAsiatico}'`,
-      etapa: 'selecao_linha',
-      ...apostaComLinha,
-    });
+    reagendarAposta(aposta, `linha exata '${apostaComLinha.linha}' ainda não disponível`);
     return;
   }
 
@@ -1153,10 +1164,18 @@ async function faseOddsAsiaticas(aposta) {
 
   // Captura o valor da odd antes de clicar
   const spanOdd = queryFirst(SEL_ODD_VALUE, botao);
-  const oddCapturada = spanOdd ? parseFloat(spanOdd.textContent.trim()) : null;
+  const oddCapturada = spanOdd ? parseFloat(spanOdd.textContent.trim().replace(',', '.')) : null;
   apostaComLinha.oddCapturada = oddCapturada;
 
   console.log(`[BOT] 💹 Odd capturada: ${oddCapturada} (${apostaComLinha.mercadoAsiatico} | linha ${apostaComLinha.linha} | ${apostaComLinha.direcao})`);
+
+  // Para Over: se odd da Bet365 está abaixo da odd do alerta, espera
+  if (apostaComLinha.direcao === 'mais' && apostaComLinha.oddMinima && oddCapturada !== null && oddCapturada < apostaComLinha.oddMinima) {
+    console.warn(`[BOT] ⏳ Odd ${oddCapturada} abaixo do mínimo ${apostaComLinha.oddMinima} — reagendando`);
+    limparEstado();
+    reagendarAposta(aposta, `odd ${oddCapturada} < mínimo ${apostaComLinha.oddMinima}`);
+    return;
+  }
 
   // Clica no leaf _Odds (span com o valor numérico), igual a $('.gl-ParticipantCentered_Odds').click()
   const alvoClique = spanOdd || botao;
@@ -1198,6 +1217,322 @@ async function faseOddsAsiaticas(aposta) {
   }
 }
 
+// ─── FASE: EMPATE (1X2) ───────────────────────────────────────────────────────
+// Aposta no participante "Empate" do mercado "Resultado Final" na página do jogo.
+// Estrutura HTML confirmada (Bet365 BR):
+//   <div class="gl-MarketGroupPod sip-MarketGroup">
+//     <div class="sip-MarketGroupButton_Text">Resultado Final</div>
+//     ...
+//     <div class="srb-ParticipantResponsiveText ...">
+//       <span class="srb-ParticipantResponsiveText_Name">Empate</span>
+//       <span class="srb-ParticipantResponsiveText_Odds">2.75</span>
+//     </div>
+
+async function faseEmpate(aposta) {
+  await sleep(2000); // aguarda a página do jogo carregar
+
+  const pod = localizarPodResultadoFinal();
+  if (!pod) {
+    diagnosticarMercado();
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: 'Mercado "Resultado Final" não encontrado', etapa: 'localizacao_mercado', ...aposta });
+    return;
+  }
+
+  const btnEmpate = encontrarBotaoEmpate(pod);
+  if (!btnEmpate) {
+    diagnosticarMercado();
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: 'Participante "Empate" não encontrado no mercado Resultado Final', etapa: 'clique_odd', ...aposta });
+    return;
+  }
+
+  const oddSpan = btnEmpate.querySelector('[class*="ParticipantResponsiveText_Odds"], [class*="ParticipantBorderless_Odds"], [class*="ParticipantOddsOnly_Odds"]');
+  const oddCapturada = oddSpan ? parseFloat(oddSpan.textContent.trim().replace(',', '.')) : null;
+  console.log(`[BOT] 💹 Odd empate: ${oddCapturada}`);
+
+  const alvoClique = oddSpan || btnEmpate;
+  const clicou = await clicarCDP(alvoClique, 'odd EMPATE (Resultado Final)');
+  if (!clicou) {
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: 'Falha ao clicar na odd de empate', etapa: 'clique_odd', ...aposta });
+    return;
+  }
+
+  await sleep(800);
+  const resultado = await preencherEConfirmar(aposta.valorReais, aposta.dryRun);
+  limparEstado();
+
+  await reportarResultado({
+    sucesso: resultado.sucesso,
+    betRef: resultado.betRef,
+    odd: oddCapturada,
+    etapa: 'confirmacao',
+    timestamp: new Date().toISOString(),
+    erro: resultado.sucesso ? undefined : 'Falha ao preencher ou confirmar a aposta de empate',
+    ...aposta,
+  });
+
+  if (resultado.sucesso && !resultado.dryRun) {
+    await sleep(1500);
+    console.log('[BOT] 🏠 Aposta confirmada, voltando pra home');
+    location.href = 'https://www.bet365.bet.br/#/HO/';
+  }
+}
+
+// Localiza o pod do mercado "Resultado Final" pelo título
+function localizarPodResultadoFinal() {
+  const candidatosTitulo = [
+    'resultado final',
+    'resultado da partida',
+    'resultado de tempo integral',
+    'match result',
+    'full time result',
+    'match winner',
+    '1x2',
+  ];
+
+  const pods = queryAll(SEL_MARKET_POD);
+  console.log(`[BOT] 🔍 ${pods.length} pods para checar (resultado final)`);
+
+  for (const pod of pods) {
+    const textoEl = queryFirst(SEL_MARKET_TITLE, pod);
+    if (!textoEl) continue;
+    const txt = textoEl.textContent.trim().toLowerCase();
+    if (candidatosTitulo.some(c => txt === c || txt.startsWith(c))) {
+      console.log(`[BOT] ✅ Pod encontrado: "${textoEl.textContent.trim()}"`);
+      return pod;
+    }
+  }
+
+  // Fallback: pod com participante nomeado "Empate"
+  console.log('[BOT] 🔍 Fallback: procurando pod com participante "Empate"...');
+  for (const pod of pods) {
+    const names = pod.querySelectorAll('[class*="ParticipantResponsiveText_Name"], [class*="ParticipantBorderless_Name"], [class*="ParticipantCentered_Name"]');
+    if ([...names].some(n => /^empate$/i.test(n.textContent.trim()))) {
+      const titulo = queryFirst(SEL_MARKET_TITLE, pod)?.textContent.trim() || '(sem título)';
+      console.log(`[BOT] ✅ Pod com "Empate" (fallback): "${titulo}"`);
+      return pod;
+    }
+  }
+
+  return null;
+}
+
+// Encontra o container clicável do participante "Empate" dentro do pod
+function encontrarBotaoEmpate(pod) {
+  const nameSpans = pod.querySelectorAll('[class*="ParticipantResponsiveText_Name"], [class*="ParticipantBorderless_Name"], [class*="ParticipantCentered_Name"]');
+  for (const span of nameSpans) {
+    const t = span.textContent.trim().toLowerCase();
+    if (t === 'empate' || t === 'draw') {
+      const btn = span.closest('[class*="srb-ParticipantResponsiveText"], [class*="gl-Participant"]') || span.parentElement;
+      if (btn) {
+        console.log(`[BOT] ✅ Botão empate encontrado via Name="${span.textContent.trim()}"`);
+        return btn;
+      }
+    }
+  }
+  console.warn('[BOT] ⚠️ Nenhum participante chamado "Empate" no pod');
+  return null;
+}
+
+// ─── FASE: ABA ESCANTEIOS (NÃO-ASIÁTICA) ──────────────────────────────────────
+// Aposta na aba "Escanteios" / "Escanteios/Cartões" da Bet365.
+// Linha alvo = total_atual + offset. Direção mais/menos.
+
+async function faseEscanteiosTab(aposta) {
+  await sleep(2000);
+
+  // Tenta localizar o pod direto (todos os mercados costumam estar visíveis na página do jogo).
+  // Se não achar, tenta clicar em aba "Escanteios" como fallback e re-localiza.
+  let pod = localizarPodEscanteiosTab();
+  if (!pod) {
+    console.log('[BOT] ℹ️ Pod escanteios não está visível — tentando clicar em aba "Escanteios"');
+    await clicarAbaEscanteios();
+    await sleep(1200);
+    pod = localizarPodEscanteiosTab();
+  }
+  if (!pod) {
+    diagnosticarMercado();
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: 'Mercado de escanteios não encontrado', etapa: 'localizacao_mercado', ...aposta });
+    return;
+  }
+
+  // Tenta ler o total direto do pod (sip-MarketGroup_Info: "Nº Escanteios Marcados N")
+  let totalAtual = lerTotalEscanteiosDoPod(pod);
+  if (totalAtual === null) {
+    console.log('[BOT] ℹ️ Sem info no pod — caindo no fallback de leitura geral');
+    totalAtual = await lerTotalEscanteios();
+  }
+  if (totalAtual === null) {
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: 'Não foi possível ler o total de escanteios', etapa: 'leitura_stat', ...aposta });
+    return;
+  }
+
+  const linhaCalculada = +(totalAtual + aposta.offset).toFixed(1);
+  console.log(`[BOT] 🔢 Escanteios: ${totalAtual} + ${aposta.offset} = ${linhaCalculada}`);
+  const apostaComLinha = { ...aposta, linha: String(linhaCalculada) };
+
+  const indiceLinha = encontrarIndiceLinha(pod, apostaComLinha.linha);
+  if (indiceLinha === -1) {
+    console.warn(`[BOT] ⏳ Linha "${apostaComLinha.linha}" não está aberta no mercado de escanteios — reagendando`);
+    limparEstado();
+    reagendarAposta(aposta, `linha de escanteios '${apostaComLinha.linha}' ainda não disponível`);
+    return;
+  }
+
+  const indiceColuna = encontrarIndiceColuna(pod, apostaComLinha.direcao);
+  const colunas = queryAll(SEL_MARKET_COL, pod);
+  const coluna = colunas[indiceColuna];
+  if (!coluna) {
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: `Coluna para direção '${apostaComLinha.direcao}' não encontrada`, etapa: 'clique_odd', ...apostaComLinha });
+    return;
+  }
+
+  const botoes = queryAll(SEL_ODD_BUTTON, coluna);
+  const botao = botoes[indiceLinha];
+  if (!botao) {
+    diagnosticarMercado();
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: `Odd não encontrada para linha '${apostaComLinha.linha}' direção '${apostaComLinha.direcao}'`, etapa: 'clique_odd', ...apostaComLinha });
+    return;
+  }
+
+  const isSuspended = SEL_ODD_SUSPENDED.some(sel => {
+    try { return botao.matches(sel) || !!botao.querySelector(sel); } catch { return false; }
+  });
+  if (isSuspended) {
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: `Odd suspensa para linha '${apostaComLinha.linha}' direção '${apostaComLinha.direcao}'`, etapa: 'clique_odd', ...apostaComLinha });
+    return;
+  }
+
+  const spanOdd = queryFirst(SEL_ODD_VALUE, botao);
+  const oddCapturada = spanOdd ? parseFloat(spanOdd.textContent.trim()) : null;
+  console.log(`[BOT] 💹 Odd capturada: ${oddCapturada} (Escanteios | linha ${apostaComLinha.linha} | ${apostaComLinha.direcao})`);
+
+  const alvoClique = spanOdd || botao;
+  const clicou = await clicarCDP(alvoClique, `odd Escanteios linha=${apostaComLinha.linha} ${apostaComLinha.direcao}`);
+  if (!clicou) {
+    limparEstado();
+    await reportarResultado({ sucesso: false, erro: 'Falha ao clicar na odd de escanteios', etapa: 'clique_odd', ...apostaComLinha });
+    return;
+  }
+
+  await sleep(800);
+  const resultado = await preencherEConfirmar(apostaComLinha.valorReais, apostaComLinha.dryRun);
+  limparEstado();
+
+  await reportarResultado({
+    sucesso: resultado.sucesso,
+    betRef: resultado.betRef,
+    odd: oddCapturada,
+    linha: apostaComLinha.linha,
+    etapa: 'confirmacao',
+    timestamp: new Date().toISOString(),
+    erro: resultado.sucesso ? undefined : 'Falha ao preencher ou confirmar a aposta de escanteios',
+    ...apostaComLinha,
+  });
+
+  if (resultado.sucesso && !resultado.dryRun) {
+    await sleep(1500);
+    console.log('[BOT] 🏠 Aposta confirmada, voltando pra home');
+    location.href = 'https://www.bet365.bet.br/#/HO/';
+  }
+}
+
+// Clica na aba "Escanteios" ou "Escanteios/Cartões"
+async function clicarAbaEscanteios() {
+  const tabSels = [
+    '[class*="ovm-ClassificationMarketSwitcherMenu_Item"]',
+    '[class*="ipe-GridHeaderTabLink"]',
+    '[role="tab"]',
+  ];
+  let tabsPresentes = null;
+  for (const sel of tabSels) {
+    tabsPresentes = await waitFor(sel, 1500);
+    if (tabsPresentes) break;
+  }
+
+  const candidatos = [...new Set(tabSels.flatMap(sel => {
+    try { return [...document.querySelectorAll(sel)]; } catch { return []; }
+  }))].filter(el => el.offsetParent !== null);
+
+  const norm = s => s.replace(/\s+/g, ' ').trim().toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+  console.log(`[BOT] 📋 ${candidatos.length} candidatos de tab:`,
+    candidatos.slice(0, 20).map(el => `"${el.textContent.trim().slice(0, 25)}"`).join(' | '));
+
+  // Prioriza "Escanteios" puro; senão "Escanteios/Cartões"; senão qualquer um com "escanteio" ou "corner"
+  const aba = candidatos.find(el => norm(el.textContent) === 'escanteios')
+           || candidatos.find(el => norm(el.textContent) === 'escanteios/cartoes' || norm(el.textContent) === 'escanteioscartoes')
+           || candidatos.find(el => /escanteio|corner/.test(norm(el.textContent)));
+
+  if (!aba) {
+    console.warn('[BOT] ⚠️ Aba "Escanteios" não encontrada');
+    diagnosticarMercado();
+    return false;
+  }
+
+  const cls = (aba.className || '');
+  const sel = aba.getAttribute('aria-selected');
+  if (cls.includes('selected') || sel === 'true') {
+    console.log(`[BOT] ✅ Aba "${aba.textContent.trim()}" já selecionada`);
+    return true;
+  }
+  await clicarNavegar(aba, `aba "${aba.textContent.trim()}"`);
+  await sleep(1500);
+  return true;
+}
+
+// Localiza o pod do mercado de escanteios (com colunas Mais/Menos por linha).
+// Bet365 BR usa "Encontro - Escanteios" como título do total FT.
+function localizarPodEscanteiosTab() {
+  const candidatosTitulo = [
+    'encontro - escanteios',  // FT total (Bet365 BR)
+    'total de escanteios',
+    'escanteios totais',
+    'total corners',
+    'match corners',
+  ];
+
+  const pods = queryAll(SEL_MARKET_POD);
+  console.log(`[BOT] 🔍 ${pods.length} pods de mercado para checar (escanteios)`);
+
+  for (const candidato of candidatosTitulo) {
+    for (const pod of pods) {
+      const textoEl = queryFirst(SEL_MARKET_TITLE, pod);
+      if (!textoEl) continue;
+      const txt = textoEl.textContent.trim().toLowerCase();
+      if (txt === candidato || txt.startsWith(candidato)) {
+        const labels = queryAll(SEL_LINE_LABEL, pod);
+        const odds   = queryAll(SEL_ODD_BUTTON, pod);
+        if (labels.length >= 1 && odds.length >= 2) {
+          console.log(`[BOT] ✅ Pod escanteios encontrado: "${textoEl.textContent.trim()}" (${labels.length} linhas, ${odds.length} odds)`);
+          return pod;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// Lê o total atual de escanteios direto do pod (sip-MarketGroup_Info: "Nº Escanteios Marcados N")
+function lerTotalEscanteiosDoPod(pod) {
+  const info = pod.querySelector('[class*="sip-MarketGroup_Info"], [class*="MarketGroup_Info"]');
+  if (!info) return null;
+  const m = info.textContent.match(/(\d+)/);
+  if (!m) return null;
+  const total = parseInt(m[1], 10);
+  console.log(`[BOT] 🚩 Escanteios (do pod info "${info.textContent.trim()}"): total=${total}`);
+  return total;
+}
+
 // ─── STAKE / CONFIRMAR ────────────────────────────────────────────────────────
 
 async function preencherEConfirmar(valorReais, dryRun) {
@@ -1232,7 +1567,9 @@ async function preencherEConfirmar(valorReais, dryRun) {
     const retryCount = estado?.retryCount || 0;
     if (retryCount < 2) {
       console.warn(`[BOT] ⚠️ Erro Bet365: "${msgErro}" — retry ${retryCount + 1}/2, recarregando...`);
-      salvarEstado('odds-asiaticas', estado?.aposta, retryCount + 1);
+      // Preserva a fase original (empate / escanteios-tab / odds-asiaticas)
+      const faseRetry = estado?.fase || 'odds-asiaticas';
+      salvarEstado(faseRetry, estado?.aposta, retryCount + 1);
       await sleep(1500);
       location.reload();
       // location.reload() não para o JS imediatamente — sem isso o caller
@@ -1281,13 +1618,10 @@ async function preencherEConfirmar(valorReais, dryRun) {
   // Formata o valor: vírgula decimal (padrão Bet365 BR), sem casas desnecessárias
   const valorStr = valorReais.toFixed(2).replace('.', ',');
 
-  // Digita no contenteditable via execCommand (único método que o React/Bet365 reconhece)
-  stakeInput.focus();
-  await sleep(150);
-  document.execCommand('selectAll', false, null);
-  await sleep(100);
-  document.execCommand('insertText', false, valorStr);
-  await sleep(2000);
+  // Digita via CDP (Input.insertText). execCommand não é aceito pelo React do Bet365 —
+  // o valor aparece visualmente mas o estado interno mantém o stake default.
+  await digitarCDP(stakeInput, valorStr, 'campo de stake');
+  await sleep(1500);
   console.log(`[BOT] 💰 Valor: R$${valorStr}`);
 
   if (dryRun) {
@@ -1413,9 +1747,12 @@ function estaEmPaginaDeJogo() {
 // ─── FLUXO PRINCIPAL ─────────────────────────────────────────────────────────
 
 async function executarAposta(aposta) {
+  const tipoFluxo = aposta.tipoFluxo || 'asiaticas';
   console.log(`\n[BOT] ══════════════════════════════════`);
-  console.log(`[BOT] 🎯 ${aposta.timeCasa} x ${aposta.timeVisitante}`);
-  console.log(`[BOT] 📊 ${aposta.mercadoAsiatico} | offset=${aposta.offset} | ${aposta.direcao} | R$${aposta.valorReais}${aposta.dryRun ? ' [DRY RUN]' : ''}`);
+  console.log(`[BOT] 🎯 ${aposta.timeCasa} x ${aposta.timeVisitante} | tipo=${tipoFluxo}`);
+  if (tipoFluxo === 'empate')              console.log(`[BOT] 📊 EMPATE (1X2) | R$${aposta.valorReais}${aposta.dryRun ? ' [DRY RUN]' : ''}`);
+  else if (tipoFluxo === 'escanteios_tab') console.log(`[BOT] 📊 Aba Escanteios | offset=${aposta.offset} | ${aposta.direcao} | R$${aposta.valorReais}${aposta.dryRun ? ' [DRY RUN]' : ''}`);
+  else                                     console.log(`[BOT] 📊 ${aposta.mercadoAsiatico} | offset=${aposta.offset} | ${aposta.direcao} | R$${aposta.valorReais}${aposta.dryRun ? ' [DRY RUN]' : ''}`);
 
   await faseBusca(aposta);
 }
@@ -1435,6 +1772,15 @@ function reportarResultado(resultado) {
   chrome.runtime.sendMessage({ acao: 'resultado', payload });
 }
 
+// Devolve a aposta para o bridge — o bridge re-enfileira com delay (REAGENDAR_MS).
+// Usado quando a linha exata não está aberta ou a odd está abaixo do mínimo.
+function reagendarAposta(aposta, motivo) {
+  console.log(`[BOT] 🔁 Reagendando: ${motivo}`);
+  // Limpa campos derivados que não devem persistir entre tentativas
+  const { linha: _l, oddCapturada: _o, dryRun: _d, ...apostaLimpa } = aposta;
+  chrome.runtime.sendMessage({ acao: 'reagendar', payload: { aposta: { ...apostaLimpa, dryRun: aposta.dryRun }, motivo } });
+}
+
 // ─── RETOMADA APÓS NAVEGAÇÃO ──────────────────────────────────────────────────
 
 async function verificarEstadoPendente() {
@@ -1450,12 +1796,10 @@ async function verificarEstadoPendente() {
 
   executando = true;
   try {
-    if (estado.fase === 'odds-asiaticas') {
-      await faseOddsAsiaticas(estado.aposta);
-    } else {
-      // busca ou busca-digitar (legado) — reinicia pelo fluxo novo
-      await faseBusca(estado.aposta);
-    }
+    if      (estado.fase === 'odds-asiaticas')  await faseOddsAsiaticas(estado.aposta);
+    else if (estado.fase === 'empate')          await faseEmpate(estado.aposta);
+    else if (estado.fase === 'escanteios-tab')  await faseEscanteiosTab(estado.aposta);
+    else                                        await faseBusca(estado.aposta);
   } finally {
     executando = false;
   }
