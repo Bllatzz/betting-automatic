@@ -1,0 +1,9 @@
+node_modules
+extensao
+docs
+test-*.js
+*.sh
+cloudflared-*
+.env
+.env.*
+.claude

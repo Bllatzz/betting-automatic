@@ -10,7 +10,8 @@
   "host_permissions": [
     "*://*.bet365.bet.br/*",
     "*://bet365.bet.br/*",
-    "http://localhost/*"
+    "http://localhost/*",
+    "https://*.fly.dev/*"
   ],
   "content_scripts": [
     {

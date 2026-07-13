@@ -1,4 +1,19 @@
-const SERVER = 'http://localhost:3002';
+let SERVER        = 'http://localhost:3002';
+let BRIDGE_SECRET = '';
+
+async function carregarConfig() {
+  const data = await chrome.storage.local.get(['serverUrl', 'bridgeSecret']);
+  SERVER        = data.serverUrl    || 'http://localhost:3002';
+  BRIDGE_SECRET = data.bridgeSecret || '';
+  document.getElementById('inputServerUrl').value    = SERVER;
+  document.getElementById('inputBridgeSecret').value = BRIDGE_SECRET;
+}
+
+function headersAuth() {
+  const h = {};
+  if (BRIDGE_SECRET) h['X-Bridge-Secret'] = BRIDGE_SECRET;
+  return h;
+}
 
 const dot        = document.getElementById('dot');
 const statusText = document.getElementById('status-text');
@@ -6,20 +21,23 @@ const ultimaDiv  = document.getElementById('ultima');
 const ultimaInfo = document.getElementById('ultima-info');
 const msgEl      = document.getElementById('msg');
 const btnTeste   = document.getElementById('btnTeste');
+const btnSalvar  = document.getElementById('btnSalvar');
 
 // ─── STATUS DO SERVIDOR ───────────────────────────────────────────────────────
 
 async function verificarServidor() {
   try {
-    const res = await fetch(`${SERVER}/status`, { signal: AbortSignal.timeout(2000) });
-    const { pendente, ultimaAposta } = await res.json();
+    const res = await fetch(`${SERVER}/status`, {
+      headers: headersAuth(),
+      signal: AbortSignal.timeout(2000),
+    });
+    const { ultimaAposta } = await res.json();
 
     dot.className = 'dot ok';
-    statusText.innerHTML = `Servidor <strong>online</strong> · ${pendente ? '1 aposta pendente' : 'aguardando'}`;
+    statusText.innerHTML = `Servidor <strong>online</strong>`;
 
     if (ultimaAposta) {
       ultimaDiv.style.display = 'block';
-      // Exibe a linha calculada se disponível, senão o offset
       const { timeCasa, timeVisitante, mercadoAsiatico, linha, offset, direcao, sucesso } = ultimaAposta;
       const dir = direcao === 'mais' ? 'Over' : 'Under';
       const linhaExibida = linha != null ? linha : (offset != null ? `+${offset}` : '?');
@@ -28,12 +46,22 @@ async function verificarServidor() {
     }
   } catch {
     dot.className = 'dot err';
-    statusText.innerHTML = 'Servidor <strong>offline</strong> — rode: npm run server';
+    statusText.innerHTML = 'Servidor <strong>offline</strong>';
   }
 }
 
-verificarServidor();
-setInterval(verificarServidor, 3000);
+// ─── SALVAR CONFIGURAÇÕES ─────────────────────────────────────────────────────
+
+btnSalvar.addEventListener('click', async () => {
+  const url    = document.getElementById('inputServerUrl').value.trim();
+  const secret = document.getElementById('inputBridgeSecret').value.trim();
+
+  await chrome.storage.local.set({ serverUrl: url, bridgeSecret: secret });
+  SERVER        = url    || 'http://localhost:3002';
+  BRIDGE_SECRET = secret || '';
+  mostrarMsg('Configurações salvas!', 'ok');
+  verificarServidor();
+});
 
 // ─── TESTE MANUAL ─────────────────────────────────────────────────────────────
 
@@ -45,25 +73,13 @@ btnTeste.addEventListener('click', async () => {
   const direcao         = document.getElementById('direcao').value;
   const valorReais      = parseFloat(document.getElementById('valor').value) || 0.50;
 
-  if (!timeCasa || !timeVisitante) {
-    mostrarMsg('Preenche os dois times!', 'err');
-    return;
-  }
-  if (offsetRaw === '') {
-    mostrarMsg('Informe o offset (ex: 0.5, 3.5, 2.0)', 'err');
-    return;
-  }
+  if (!timeCasa || !timeVisitante) { mostrarMsg('Preenche os dois times!', 'err'); return; }
+  if (offsetRaw === '') { mostrarMsg('Informe o offset (ex: 0.5, 3.5, 2.0)', 'err'); return; }
   const offset = parseFloat(offsetRaw);
-  if (isNaN(offset) || offset < 0) {
-    mostrarMsg('Offset inválido — use um número >= 0 (ex: 0.5)', 'err');
-    return;
-  }
+  if (isNaN(offset) || offset < 0) { mostrarMsg('Offset inválido — use um número >= 0', 'err'); return; }
 
   const [tab] = await chrome.tabs.query({ url: ['*://*.bet365.bet.br/*', '*://bet365.bet.br/*'] });
-  if (!tab) {
-    mostrarMsg('Abre o bet365.bet.br primeiro!', 'err');
-    return;
-  }
+  if (!tab) { mostrarMsg('Abre o bet365.bet.br primeiro!', 'err'); return; }
 
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
@@ -91,3 +107,8 @@ function mostrarMsg(texto, tipo) {
   msgEl.style.display = 'block';
   setTimeout(() => msgEl.style.display = 'none', 3000);
 }
+
+carregarConfig().then(() => {
+  verificarServidor();
+  setInterval(verificarServidor, 3000);
+});

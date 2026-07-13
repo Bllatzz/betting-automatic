@@ -126,9 +126,14 @@ function parsearMensagemRobo(texto) {
 
     // ── Odd da aposta ─────────────────────────────────────────────────────────
     // Ex: "Escanteios over +0.5: 1.81"
+    // A linha com "over"/"under" tem prioridade e sobrescreve qualquer valor
+    // capturado antes (ex: "Unidades: 2.15" não deve contaminar oddMinima).
     const oddMatch = linha.match(/:\s*(\d+[.,]\d+)\s*$/);
-    if (oddMatch && !resultado.odd && !linha.toLowerCase().includes('stake')) {
-      resultado.odd = parseFloat(oddMatch[1].replace(',', '.'));
+    if (oddMatch && !linha.toLowerCase().includes('stake')) {
+      const ehLinhaOdd = /\b(over|under)\b/i.test(linha);
+      if (ehLinhaOdd || !resultado.odd) {
+        resultado.odd = parseFloat(oddMatch[1].replace(',', '.'));
+      }
     }
 
     // ── Fallback: extrai direção e offset da linha de detalhe ─────────────────

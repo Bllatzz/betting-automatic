@@ -108,6 +108,18 @@
       <button class="btn btn-test" id="btnTeste">Testar no browser (dry run)</button>
     </div>
 
+    <!-- CONFIGURAÇÕES DO SERVIDOR -->
+    <details>
+      <summary style="font-size:11px;color:#44445a;text-transform:uppercase;letter-spacing:.5px;cursor:pointer;user-select:none;list-style:none">▸ Configurações do servidor</summary>
+      <div class="form" style="margin-top:10px">
+        <label>URL do servidor</label>
+        <input id="inputServerUrl" placeholder="http://localhost:3002" />
+        <label>Bridge Secret</label>
+        <input id="inputBridgeSecret" type="password" placeholder="(vazio = sem auth)" />
+        <button class="btn btn-test" id="btnSalvar">Salvar</button>
+      </div>
+    </details>
+
     <div id="msg" style="display:none" class="msg"></div>
 
   </div>

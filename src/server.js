@@ -276,11 +276,19 @@ const rotas = {
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
 
+const BRIDGE_SECRET = process.env.BRIDGE_SECRET || '';
+
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Bridge-Secret');
 
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  if (BRIDGE_SECRET && req.headers['x-bridge-secret'] !== BRIDGE_SECRET) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, erro: 'Unauthorized' }));
+    return;
+  }
 
   const chave = `${req.method} ${req.url.split('?')[0]}`;
   const handler = rotas[chave];

@@ -1343,8 +1343,20 @@ function encontrarBotaoEmpate(pod) {
 async function faseEscanteiosTab(aposta) {
   await sleep(2000);
 
-  // Tenta localizar o pod direto (todos os mercados costumam estar visíveis na página do jogo).
-  // Se não achar, tenta clicar em aba "Escanteios" como fallback e re-localiza.
+  const MAX_RETRIES = 5;
+  const retryCount = aposta._retryEscanteios || 0;
+
+  // Salva estado e recarrega a página — verificarEstadoPendente retomará com _retryEscanteios+1.
+  // Cada reload re-lê o total de escanteios e recalcula a linha alvo do zero.
+  function recarregarERentar(motivo) {
+    if (retryCount >= MAX_RETRIES) return false;
+    console.log(`[BOT] 🔄 ${motivo} — recarregando (${retryCount + 1}/${MAX_RETRIES})`);
+    salvarEstado('escanteios-tab', { ...aposta, _retryEscanteios: retryCount + 1 });
+    location.reload();
+    return true;
+  }
+
+  // Tenta localizar o pod direto. Se não achar, tenta clicar em aba "Escanteios" como fallback.
   let pod = localizarPodEscanteiosTab();
   if (!pod) {
     console.log('[BOT] ℹ️ Pod escanteios não está visível — tentando clicar em aba "Escanteios"');
@@ -1353,9 +1365,10 @@ async function faseEscanteiosTab(aposta) {
     pod = localizarPodEscanteiosTab();
   }
   if (!pod) {
+    if (recarregarERentar('Mercado de escanteios não encontrado')) return;
     diagnosticarMercado();
     limparEstado();
-    await reportarResultado({ sucesso: false, erro: 'Mercado de escanteios não encontrado', etapa: 'localizacao_mercado', ...aposta });
+    await reportarResultado({ sucesso: false, erro: 'Mercado de escanteios não encontrado após retentativas', etapa: 'localizacao_mercado', ...aposta });
     return;
   }
 
@@ -1366,18 +1379,23 @@ async function faseEscanteiosTab(aposta) {
     totalAtual = await lerTotalEscanteios();
   }
   if (totalAtual === null) {
+    if (recarregarERentar('Total de escanteios não encontrado')) return;
     limparEstado();
     await reportarResultado({ sucesso: false, erro: 'Não foi possível ler o total de escanteios', etapa: 'leitura_stat', ...aposta });
     return;
   }
 
-  const linhaCalculada = +(totalAtual + aposta.offset).toFixed(1);
-  console.log(`[BOT] 🔢 Escanteios: ${totalAtual} + ${aposta.offset} = ${linhaCalculada}`);
+  // Mercado usa linhas inteiras (11, 12, 13…) → arredonda pra cima
+  // Ex: 10 + 2.5 = 12.5 → ceil = 13 | 10 + 3.5 = 13.5 → ceil = 14
+  const linhaCalculada = Math.ceil(totalAtual + aposta.offset);
+  console.log(`[BOT] 🔢 Escanteios: ceil(${totalAtual} + ${aposta.offset}) = ${linhaCalculada}`);
   const apostaComLinha = { ...aposta, linha: String(linhaCalculada) };
 
   const indiceLinha = encontrarIndiceLinha(pod, apostaComLinha.linha);
   if (indiceLinha === -1) {
-    console.warn(`[BOT] ⏳ Linha "${apostaComLinha.linha}" não está aberta no mercado de escanteios — reagendando`);
+    if (recarregarERentar(`Linha "${apostaComLinha.linha}" não encontrada no mercado`)) return;
+    // Após esgotar os reloads, reagenda para tentar mais tarde com o bridge delay
+    console.warn(`[BOT] ⏳ Linha "${apostaComLinha.linha}" indisponível — reagendando`);
     limparEstado();
     reagendarAposta(aposta, `linha de escanteios '${apostaComLinha.linha}' ainda não disponível`);
     return;
@@ -1395,6 +1413,7 @@ async function faseEscanteiosTab(aposta) {
   const botoes = queryAll(SEL_ODD_BUTTON, coluna);
   const botao = botoes[indiceLinha];
   if (!botao) {
+    if (recarregarERentar(`Botão da odd não encontrado (linha ${apostaComLinha.linha})`)) return;
     diagnosticarMercado();
     limparEstado();
     await reportarResultado({ sucesso: false, erro: `Odd não encontrada para linha '${apostaComLinha.linha}' direção '${apostaComLinha.direcao}'`, etapa: 'clique_odd', ...apostaComLinha });
@@ -1405,6 +1424,7 @@ async function faseEscanteiosTab(aposta) {
     try { return botao.matches(sel) || !!botao.querySelector(sel); } catch { return false; }
   });
   if (isSuspended) {
+    if (recarregarERentar(`Odd suspensa (linha ${apostaComLinha.linha})`)) return;
     limparEstado();
     await reportarResultado({ sucesso: false, erro: `Odd suspensa para linha '${apostaComLinha.linha}' direção '${apostaComLinha.direcao}'`, etapa: 'clique_odd', ...apostaComLinha });
     return;
@@ -1763,7 +1783,7 @@ async function executarAposta(aposta) {
 
 function reportarResultado(resultado) {
   // Remove campos de controle interno que não devem ir no payload final
-  const { oddCapturada: _ignorar, ...payload } = resultado;
+  const { oddCapturada: _ignorar, _retryEscanteios: _re, ...payload } = resultado;
   const icon = payload.sucesso ? '✅' : '❌';
   console.log(`[BOT] 📤 ${icon} etapa=${payload.etapa || '-'} | ${payload.erro || 'sucesso'}`);
   // CA 5.3 — loga o payload completo para diagnóstico
@@ -1777,7 +1797,7 @@ function reportarResultado(resultado) {
 function reagendarAposta(aposta, motivo) {
   console.log(`[BOT] 🔁 Reagendando: ${motivo}`);
   // Limpa campos derivados que não devem persistir entre tentativas
-  const { linha: _l, oddCapturada: _o, dryRun: _d, ...apostaLimpa } = aposta;
+  const { linha: _l, oddCapturada: _o, dryRun: _d, _retryEscanteios: _re, ...apostaLimpa } = aposta;
   chrome.runtime.sendMessage({ acao: 'reagendar', payload: { aposta: { ...apostaLimpa, dryRun: aposta.dryRun }, motivo } });
 }
 
